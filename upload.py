@@ -182,6 +182,11 @@ ioctl_buf = array.array('h', [0])
 received = []
 eof = False
 while True:
+    # Delay a tiny bit.  This shouldn't be necessary, and theoretically should
+    # slow things down, but it seems to help avoid dropped segments and thus
+    # makes the upload more reliable.  I haven't figured out the exact cause.
+    time.sleep(0.01)
+
     # Wait until the send buffer isn't full.
     r, w, e = select.select([s] if not eof else [], [s], [])
 
