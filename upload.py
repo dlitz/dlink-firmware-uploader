@@ -109,9 +109,18 @@
 # time we fail to get an ACK.
 #
 # Additionally, there are the following bugs:
-# - The header needs to be in a different TCP segment from the body, or the
-#   firmware won't load properly.
 # - We need to get our final data ACK before sending TCP FIN.
+# - The server on the device requires certain pieces of data to either share
+#   or not share a segment, contrary to the stream-oriented nature of TCP.
+#   These requirements are not consistent; they change based on heuristics
+#   like the User-Agent header and the specific boundary string chosen for
+#   the MIME multipart POST data. The segmentation and header values chosen by
+#   this script are one way to get on a "happy path" through the server, but
+#   they're not the only way. For example, we could send a Firefox user agent
+#   and structure our segments how the server expects Firefox to send them,
+#   and that would work too. If you want to dive into the madness, see
+#   Matrix/platform/kernel/AR7240/loader/u-boot/httpd/cgi.c in D-Link's
+#   DIR-615 E4 GPL release.
 #
 # So, we need this stupid program to work around these bugs.
 
@@ -129,8 +138,10 @@ from termios import TIOCOUTQ as SIOCOUTQ    # On Linux, SIOCOUTQ has the same va
 
 # We're going to try hard not to have more than one segment in flight at a time,
 # since that's where the ack bug shows up. Unfortunately, we have very little
-# control over how Linux decides to segment things.
-BUF_SIZE = 1024
+# control over how Linux decides to segment things. Testing has shown that on
+# kernel 5.15.10, at least, segments will reliably be at least 512 bytes, so
+# let's pick that.
+BUF_SIZE = 512
 
 
 filename = sys.argv[1]
@@ -144,29 +155,22 @@ data['filename'] = os.path.basename(filename).encode('utf-8')
 data['content'] = content
 
 header_template = b"""\
-POST /cgi/index HTTP/1.1
-Host: 192.168.0.1
-Accept: */*
-Content-Type: multipart/form-data; boundary={boundary}
+POST /cgi/index
 Content-Length: {body_length}
-Connection: close
-Cache-Control: no-cache
 
 """.replace(b'\n', b'\r\n')
 
 body_template = b"""\
---{boundary}
-Content-Disposition: form-data; name="files"; filename="{filename}"
-Content-Type: application/octet-stream
+----------
+Content-Type:
 
 {content}
---{boundary}--
+------------
 """.replace(b'\n', b'\r\n')
 
-body = data['body'] = body_template.format(**data)
-data['body_length'] = len(data['body'])
-header = header_template.format(**data)
-request = header + body
+body = body_template.format(**data)
+data['body_length'] = len(body)
+request = header_template.format(**data) + body
 
 # Connect, then wait a bit.
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -206,10 +210,10 @@ while True:
 
     assert i <= len(request)
 
-    # When we finish sending the header or the body, or when we receive EOF,
-    # flush the output buffer (select() already returned, so we have to
-    # busy-wait at this point).
-    if i == len(header) or i == len(request) or eof:
+    # When we finish sending the body, or when we receive EOF, flush the output
+    # buffer (select() already returned, so we have to busy-wait at this
+    # point).
+    if i == len(request) or eof:
         # Busy-wait until all data have been sent
         ioctl(s, SIOCOUTQ, ioctl_buf, 1)
         bytes_remaining = ioctl_buf[0]
@@ -221,9 +225,7 @@ while True:
             bytes_remaining = ioctl_buf[0]
         print("Output buffer drained.")
 
-        if i == len(header):
-            print("\nDone sending request header (%d bytes)" % (i,))
-        elif i == len(request):
+        if i == len(request):
             print("\nDone uploading all %d bytes." % (i,))
             break
         else:
