@@ -126,6 +126,13 @@ import time
 from fcntl import ioctl
 from termios import TIOCOUTQ as SIOCOUTQ    # On Linux, SIOCOUTQ has the same value as TIOCOUTQ
 
+
+# We're going to try hard not to have more than one segment in flight at a time,
+# since that's where the ack bug shows up. Unfortunately, we have very little
+# control over how Linux decides to segment things.
+BUF_SIZE = 1024
+
+
 filename = sys.argv[1]
 with open(filename, 'rb') as f:
     content = f.read()
@@ -168,11 +175,7 @@ s.connect(('192.168.0.1', 80))
 print("Connected.  Sleeping.")
 time.sleep(0.1)
 
-# We're going to try hard not to have more than one segment in flight at a time.
-# The plan is to reduce the outgoing buffer size until it can be fulfilled by a
-# single request.
-bufsize = 1024
-s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, bufsize)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, BUF_SIZE)
 s.setsockopt(socket.SOL_TCP, socket.TCP_NODELAY, 1)
 s.setblocking(False)
 
@@ -228,20 +231,13 @@ while True:
             print("\nDone uploading %d bytes (of %d total)." % (i, len(request)))
 
     # Send a block
-    sys.stdout.write("Uploading %d bytes starting at %d\r" % (bufsize, i))
+    sys.stdout.write("Uploading %d bytes starting at %d\r" % (BUF_SIZE, i))
     sys.stdout.flush()
-    if i < len(header):
-        sent = s.send(header[i:i+bufsize])
-        i += sent
-    else:
-        sent = s.send(request[i:i+bufsize])
-        i += sent
 
-    # If we didn't send the whole buffer, then we should adjust the buffer some more.
-    if sent < bufsize and i != len(header) and i < len(request):
-        print("\nRequested to send %d bytes, but only %d were sent.  Reducing buffer to %d." % (bufsize, sent, sent))
-        bufsize = sent
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, bufsize)
+    # We have to hope that BUF_SIZE is small enough for the kernel to decide to
+    # put it in a single segment. If it decides to queue part of it instead for
+    # a later segment, there's no easy way for us to know.
+    i += s.send(request[i:i+BUF_SIZE])
 
 # Shut down the sending side of the connection.  This is only safe to do after
 # we've received ACKs for all of the data we've sent so far.
