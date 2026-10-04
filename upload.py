@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Dwayne Litzenberger <dlitz@dlitz.net>
 # 2013-10-27
 #
@@ -126,9 +126,7 @@
 
 
 import array
-import base64
 import sys
-import os
 import select
 import socket
 import time
@@ -148,15 +146,11 @@ filename = sys.argv[1]
 with open(filename, 'rb') as f:
     content = f.read()
 
-# Build the request
-data = {}
-data['boundary'] = base64.b64encode(os.urandom(16))
-data['filename'] = os.path.basename(filename).encode('utf-8')
-data['content'] = content
-
+# Build the request. bytes objects have no .format() method, so these use
+# %-formatting (PEP 461). Keep the templates free of literal '%' characters.
 header_template = b"""\
 POST /cgi/index
-Content-Length: {body_length}
+Content-Length: %d
 
 """.replace(b'\n', b'\r\n')
 
@@ -164,13 +158,12 @@ body_template = b"""\
 ----------
 Content-Type:
 
-{content}
+%s
 ------------
 """.replace(b'\n', b'\r\n')
 
-body = body_template.format(**data)
-data['body_length'] = len(body)
-request = header_template.format(**data) + body
+body = body_template % (content,)
+request = header_template % (len(body),) + body
 
 # Connect, then wait a bit.
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
